@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "windows-test": {
+      "command": "python",
+      "args": [
+        "-m",
+        "windows_test_mcp.server"
+      ],
+      "cwd": "D:\\claude code Tools\\windows-app-test-mcp\\windows-test-mcp",
+      "env": {
+        "PYTHONPATH": "D:\\claude code Tools\\windows-app-test-mcp\\windows-test-mcp\\src"
+      }
+    }
+  }
+}
