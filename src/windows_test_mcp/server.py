@@ -7,6 +7,7 @@ import base64
 import io
 import logging
 import platform
+import subprocess
 from typing import Literal, Optional
 
 from fastmcp import FastMCP
@@ -1002,6 +1003,228 @@ def window_get_rect(input_data: WindowGetRectInput) -> WindowRectOutput:
             y=None,
             width=None,
             height=None,
+        )
+
+
+# ==================== 应用程序管理工具 ====================
+
+import psutil
+
+
+class AppLaunchInput(BaseModel):
+    """启动应用程序输入参数."""
+
+    app_path: str = Field(..., description="应用程序路径，如 'notepad.exe' 或完整路径 'C:\\Windows\\notepad.exe'")
+    args: Optional[str] = Field(None, description="启动参数（可选）")
+    wait_time: float = Field(0.5, description="启动后等待时间(秒)", ge=0)
+
+
+class AppTerminateInput(BaseModel):
+    """终止应用程序输入参数."""
+
+    process_name: str = Field(..., description="进程名，如 'notepad.exe' 或部分名称 'notepad'")
+
+
+class AppLaunchOutput(BaseModel):
+    """应用程序启动输出结果."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    pid: Optional[int] = Field(None, description="进程ID")
+    process_name: Optional[str] = Field(None, description="进程名称")
+
+
+class AppTerminateOutput(BaseModel):
+    """应用程序终止输出结果."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    terminated_pids: list[int] = Field(default_factory=list, description="被终止的进程ID列表")
+
+
+class AppListOutput(BaseModel):
+    """应用程序列表输出结果."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    processes: list[dict] = Field(default_factory=list, description="正在运行的进程列表")
+
+
+@mcp.tool(
+    description="后台启动应用程序",
+    annotations={"readOnlyHint": False, "destructiveHint": False},
+)
+def app_launch(input_data: AppLaunchInput) -> AppLaunchOutput:
+    """后台启动应用程序并返回进程信息.
+
+    Args:
+        input_data: 启动参数，包含app_path、args和wait_time
+
+    Returns:
+        AppLaunchOutput: 包含进程ID和名称的结果
+    """
+    try:
+        # 构建命令
+        cmd = [input_data.app_path]
+        if input_data.args:
+            cmd.extend(input_data.args.split())
+
+        # 后台启动程序（不阻塞）
+        if platform.system() == "Windows":
+            # Windows: 使用CREATE_NEW_CONSOLE创建新窗口，不阻塞
+            creation_flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+            process = subprocess.Popen(
+                cmd,
+                creationflags=creation_flags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        else:
+            # 其他平台
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        # 等待指定时间让程序初始化
+        import time
+        time.sleep(input_data.wait_time)
+
+        # 获取进程信息
+        try:
+            proc = psutil.Process(process.pid)
+            process_name = proc.name()
+        except psutil.NoSuchProcess:
+            process_name = input_data.app_path.split("\\")[-1].split("/")[-1]
+
+        return AppLaunchOutput(
+            success=True,
+            message=f"应用程序 '{input_data.app_path}' 启动成功",
+            pid=process.pid,
+            process_name=process_name,
+        )
+    except FileNotFoundError:
+        return AppLaunchOutput(
+            success=False,
+            message=f"找不到应用程序: '{input_data.app_path}'",
+            pid=None,
+            process_name=None,
+        )
+    except Exception as e:
+        logger.error(f"启动应用程序失败: {e}")
+        return AppLaunchOutput(
+            success=False,
+            message=f"启动应用程序失败: {str(e)}",
+            pid=None,
+            process_name=None,
+        )
+
+
+@mcp.tool(
+    description="终止指定名称的应用程序进程",
+    annotations={"readOnlyHint": False, "destructiveHint": True},
+)
+def app_terminate(input_data: AppTerminateInput) -> AppTerminateOutput:
+    """通过进程名终止所有匹配的应用程序.
+
+    Args:
+        input_data: 终止参数，包含process_name
+
+    Returns:
+        AppTerminateOutput: 包含被终止的进程ID列表
+    """
+    try:
+        terminated_pids = []
+        process_name_lower = input_data.process_name.lower()
+
+        # 遍历所有进程查找匹配的
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                proc_name = proc.info['name'] or ""
+                proc_exe = proc.info['exe'] or ""
+
+                # 匹配进程名或路径
+                if (process_name_lower in proc_name.lower() or
+                    process_name_lower in proc_exe.lower()):
+                    pid = proc.info['pid']
+                    proc.terminate()  # 先尝试优雅终止
+                    terminated_pids.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if terminated_pids:
+            return AppTerminateOutput(
+                success=True,
+                message=f"已终止 {len(terminated_pids)} 个进程: {input_data.process_name}",
+                terminated_pids=terminated_pids,
+            )
+        else:
+            return AppTerminateOutput(
+                success=False,
+                message=f"未找到匹配的进程: {input_data.process_name}",
+                terminated_pids=[],
+            )
+    except Exception as e:
+        logger.error(f"终止进程失败: {e}")
+        return AppTerminateOutput(
+            success=False,
+            message=f"终止进程失败: {str(e)}",
+            terminated_pids=[],
+        )
+
+
+@mcp.tool(
+    description="列出当前正在运行的应用程序进程",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+def app_list_running() -> AppListOutput:
+    """获取当前系统中正在运行的应用程序列表.
+
+    Returns:
+        AppListOutput: 包含进程列表的结果
+    """
+    try:
+        processes = []
+
+        for proc in psutil.process_iter(['pid', 'name', 'exe', 'memory_info', 'cpu_percent']):
+            try:
+                proc_info = proc.info
+                # 只显示有窗口的进程（GUI应用）或常见的应用程序
+                process_name = proc_info['name'] or ""
+                exe_path = proc_info['exe'] or ""
+
+                # 过滤掉系统进程，只保留可能的应用程序
+                if exe_path and not exe_path.lower().startswith(
+                    (r'c:\windows\system32', r'c:\windows\syswow64')
+                ):
+                    processes.append({
+                        'pid': proc_info['pid'],
+                        'name': process_name,
+                        'exe': exe_path,
+                        'memory_mb': round(proc_info['memory_info'].rss / 1024 / 1024, 2) if proc_info['memory_info'] else 0,
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        # 按内存使用排序，取前50个
+        processes.sort(key=lambda x: x['memory_mb'], reverse=True)
+        processes = processes[:50]
+
+        return AppListOutput(
+            success=True,
+            message=f"当前有 {len(processes)} 个应用程序在运行",
+            processes=processes,
+        )
+    except Exception as e:
+        logger.error(f"获取进程列表失败: {e}")
+        return AppListOutput(
+            success=False,
+            message=f"获取进程列表失败: {str(e)}",
+            processes=[],
         )
 
 

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__windows-test-mcp__get_screen_size",
+      "mcp__windows-test-mcp__mouse_get_position",
+      "mcp__windows-test-mcp__mouse_move",
+      "mcp__windows-test-mcp__screenshot_capture",
+      "mcp__windows-test-mcp__screenshot_region",
+      "mcp__windows-test-mcp__mouse_click",
+      "mcp__windows-test-mcp__keyboard_type",
+      "mcp__windows-test-mcp__window_get_rect",
+      "mcp__windows-test-mcp__window_capture_background",
+      "mcp__windows-test-mcp__window_activate",
+      "mcp__windows-test-mcp__mouse_scroll"
+    ]
+  }
+}
