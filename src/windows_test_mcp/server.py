@@ -32,6 +32,21 @@ except ImportError:
     logger.error("pyautogui未安装，键盘鼠标功能将不可用")
     pyautogui = None
 
+# 导入pywin32用于窗口管理
+# pywin32相关导入放在函数内部以避免启动时失败
+pywin32_available = False
+try:
+    import win32gui
+    import win32con
+    import win32ui
+    import win32api
+    import win32process
+    from PIL import Image
+
+    pywin32_available = True
+except ImportError:
+    logger.warning("pywin32未安装，窗口管理功能将不可用")
+
 # 创建MCP服务器
 mcp = FastMCP("windows-test-mcp")
 
@@ -598,6 +613,396 @@ def get_screen_size() -> dict:
     except Exception as e:
         logger.error(f"获取屏幕尺寸失败: {e}")
         return {"success": False, "message": f"获取屏幕尺寸失败: {str(e)}"}
+
+
+# ==================== 窗口管理工具 ====================
+
+
+class WindowActivateInput(BaseModel):
+    """窗口激活输入参数."""
+
+    process_name: str = Field(..., description="进程名，如 'notepad.exe' 或部分名称 'notepad'")
+    wait_time: float = Field(0.5, description="激活后等待时间(秒)", ge=0)
+
+
+class WindowCaptureInput(BaseModel):
+    """窗口截图输入参数."""
+
+    process_name: str = Field(..., description="进程名")
+    filename: Optional[str] = Field(None, description="保存截图的文件名(可选)")
+
+
+class WindowGetRectInput(BaseModel):
+    """获取窗口矩形输入参数."""
+
+    process_name: str = Field(..., description="进程名")
+
+
+class WindowOperationOutput(BaseModel):
+    """窗口操作输出结果."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    hwnd: Optional[int] = Field(None, description="窗口句柄")
+
+
+class WindowRectOutput(BaseModel):
+    """窗口矩形信息输出."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    x: Optional[int] = Field(None, description="窗口左上角X坐标")
+    y: Optional[int] = Field(None, description="窗口左上角Y坐标")
+    width: Optional[int] = Field(None, description="窗口宽度")
+    height: Optional[int] = Field(None, description="窗口高度")
+
+
+class WindowScreenshotOutput(BaseModel):
+    """窗口截图输出结果."""
+
+    success: bool = Field(..., description="操作是否成功")
+    message: str = Field(..., description="操作结果消息")
+    base64_image: Optional[str] = Field(None, description="Base64编码的PNG图片")
+    filename: Optional[str] = Field(None, description="保存的文件名")
+    hwnd: Optional[int] = Field(None, description="窗口句柄")
+
+
+def _find_window_by_process_name(process_name: str) -> list[int]:
+    """通过进程名查找所有匹配的窗口句柄."""
+    if not pywin32_available:
+        return []
+
+    hwnds = []
+    process_name_lower = process_name.lower()
+
+    def callback(hwnd, extra):
+        if win32gui.IsWindowVisible(hwnd):
+            try:
+                # 获取窗口所属进程ID
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                # 打开进程获取名称
+                handle = win32api.OpenProcess(
+                    win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ, False, pid
+                )
+                try:
+                    module_name = win32process.GetModuleFileNameEx(handle, 0)
+                    # 支持部分匹配进程名
+                    if process_name_lower in module_name.lower():
+                        extra.append(hwnd)
+                finally:
+                    win32api.CloseHandle(handle)
+            except Exception:
+                pass
+        return True
+
+    win32gui.EnumWindows(callback, hwnds)
+    return hwnds
+
+
+def _capture_window_to_image(hwnd: int) -> Image.Image:
+    """截图窗口并返回PIL Image对象."""
+    # 获取窗口尺寸
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    width = right - left
+    height = bottom - top
+
+    # 创建设备上下文
+    hwndDC = win32gui.GetWindowDC(hwnd)
+    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+    saveDC = mfcDC.CreateCompatibleDC()
+
+    # 创建位图
+    saveBitMap = win32ui.CreateBitmap()
+    saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+    saveDC.SelectObject(saveBitMap)
+
+    # 使用PrintWindow截图（支持后台窗口）
+    # PW_RENDERFULLCONTENT = 2 (Win8+ 支持渲染完整内容)
+    win32gui.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
+
+    # 转换为PIL Image
+    bmpinfo = saveBitMap.GetInfo()
+    bmpstr = saveBitMap.GetBitmapBits(True)
+    im = Image.frombuffer(
+        "RGB",
+        (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+        bmpstr,
+        "raw",
+        "BGRX",
+        0,
+        1,
+    )
+
+    # 清理资源
+    win32gui.DeleteObject(saveBitMap.GetHandle())
+    saveDC.DeleteDC()
+    mfcDC.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwndDC)
+
+    return im
+
+
+@mcp.tool(
+    description="通过进程名激活窗口到前台",
+    annotations={"readOnlyHint": False, "destructiveHint": False},
+)
+def window_activate(input_data: WindowActivateInput) -> WindowOperationOutput:
+    """通过进程名找到窗口并激活到前台.
+
+    Args:
+        input_data: 激活参数，包含process_name和wait_time
+
+    Returns:
+        WindowOperationOutput: 操作结果
+    """
+    if not pywin32_available:
+        return WindowOperationOutput(
+            success=False, message="pywin32未安装，窗口管理功能不可用", hwnd=None
+        )
+
+    try:
+        hwnds = _find_window_by_process_name(input_data.process_name)
+
+        if not hwnds:
+            return WindowOperationOutput(
+                success=False,
+                message=f"未找到进程名包含 '{input_data.process_name}' 的窗口",
+                hwnd=None,
+            )
+
+        hwnd = hwnds[0]
+
+        # 如果窗口最小化，先恢复
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+        # 强制激活
+        win32gui.SetForegroundWindow(hwnd)
+
+        # 等待指定时间
+        import time
+
+        time.sleep(input_data.wait_time)
+
+        return WindowOperationOutput(
+            success=True,
+            message=f"窗口已激活，句柄: {hwnd}",
+            hwnd=hwnd,
+        )
+    except Exception as e:
+        logger.error(f"窗口激活失败: {e}")
+        return WindowOperationOutput(
+            success=False, message=f"窗口激活失败: {str(e)}", hwnd=None
+        )
+
+
+@mcp.tool(
+    description="通过进程名后台截图窗口（无需调出前台）",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+def window_capture_background(input_data: WindowCaptureInput) -> WindowScreenshotOutput:
+    """通过进程名找到窗口并在后台截图（不激活窗口）.
+
+    Args:
+        input_data: 截图参数，包含process_name和可选的filename
+
+    Returns:
+        WindowScreenshotOutput: 包含base64编码图片的结果
+    """
+    if not pywin32_available:
+        return WindowScreenshotOutput(
+            success=False,
+            message="pywin32未安装，窗口管理功能不可用",
+            base64_image=None,
+            filename=None,
+            hwnd=None,
+        )
+
+    try:
+        hwnds = _find_window_by_process_name(input_data.process_name)
+
+        if not hwnds:
+            return WindowScreenshotOutput(
+                success=False,
+                message=f"未找到进程名包含 '{input_data.process_name}' 的窗口",
+                base64_image=None,
+                filename=None,
+                hwnd=None,
+            )
+
+        hwnd = hwnds[0]
+
+        # 截图窗口
+        screenshot = _capture_window_to_image(hwnd)
+
+        # 转换为base64
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format="PNG")
+        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        # 如果指定了文件名，保存到文件
+        saved_filename = None
+        if input_data.filename:
+            saved_filename = f"{input_data.filename}.png"
+            screenshot.save(saved_filename)
+
+        return WindowScreenshotOutput(
+            success=True,
+            message="后台截图成功",
+            base64_image=base64_image,
+            filename=saved_filename,
+            hwnd=hwnd,
+        )
+    except Exception as e:
+        logger.error(f"后台截图失败: {e}")
+        return WindowScreenshotOutput(
+            success=False,
+            message=f"后台截图失败: {str(e)}",
+            base64_image=None,
+            filename=None,
+            hwnd=None,
+        )
+
+
+@mcp.tool(
+    description="通过进程名激活窗口并截图",
+    annotations={"readOnlyHint": False, "destructiveHint": False},
+)
+def window_capture_foreground(input_data: WindowCaptureInput) -> WindowScreenshotOutput:
+    """通过进程名找到窗口，激活到前台后截图.
+
+    Args:
+        input_data: 截图参数，包含process_name和可选的filename
+
+    Returns:
+        WindowScreenshotOutput: 包含base64编码图片的结果
+    """
+    if not pywin32_available:
+        return WindowScreenshotOutput(
+            success=False,
+            message="pywin32未安装，窗口管理功能不可用",
+            base64_image=None,
+            filename=None,
+            hwnd=None,
+        )
+
+    try:
+        hwnds = _find_window_by_process_name(input_data.process_name)
+
+        if not hwnds:
+            return WindowScreenshotOutput(
+                success=False,
+                message=f"未找到进程名包含 '{input_data.process_name}' 的窗口",
+                base64_image=None,
+                filename=None,
+                hwnd=None,
+            )
+
+        hwnd = hwnds[0]
+
+        # 如果窗口最小化，先恢复
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+
+        # 强制激活
+        win32gui.SetForegroundWindow(hwnd)
+
+        # 等待窗口完全激活
+        import time
+
+        time.sleep(0.5)
+
+        # 截图窗口
+        screenshot = _capture_window_to_image(hwnd)
+
+        # 转换为base64
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format="PNG")
+        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        # 如果指定了文件名，保存到文件
+        saved_filename = None
+        if input_data.filename:
+            saved_filename = f"{input_data.filename}.png"
+            screenshot.save(saved_filename)
+
+        return WindowScreenshotOutput(
+            success=True,
+            message="前台截图成功",
+            base64_image=base64_image,
+            filename=saved_filename,
+            hwnd=hwnd,
+        )
+    except Exception as e:
+        logger.error(f"前台截图失败: {e}")
+        return WindowScreenshotOutput(
+            success=False,
+            message=f"前台截图失败: {str(e)}",
+            base64_image=None,
+            filename=None,
+            hwnd=None,
+        )
+
+
+@mcp.tool(
+    description="通过进程名获取窗口大小和位置",
+    annotations={"readOnlyHint": True, "destructiveHint": False},
+)
+def window_get_rect(input_data: WindowGetRectInput) -> WindowRectOutput:
+    """通过进程名找到窗口并获取其位置和大小.
+
+    Args:
+        input_data: 参数，包含process_name
+
+    Returns:
+        WindowRectOutput: 窗口位置和大小信息
+    """
+    if not pywin32_available:
+        return WindowRectOutput(
+            success=False,
+            message="pywin32未安装，窗口管理功能不可用",
+            x=None,
+            y=None,
+            width=None,
+            height=None,
+        )
+
+    try:
+        hwnds = _find_window_by_process_name(input_data.process_name)
+
+        if not hwnds:
+            return WindowRectOutput(
+                success=False,
+                message=f"未找到进程名包含 '{input_data.process_name}' 的窗口",
+                x=None,
+                y=None,
+                width=None,
+                height=None,
+            )
+
+        hwnd = hwnds[0]
+
+        # 获取窗口矩形
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+
+        return WindowRectOutput(
+            success=True,
+            message=f"窗口位置: ({left}, {top}), 大小: {right - left}x{bottom - top}",
+            x=left,
+            y=top,
+            width=right - left,
+            height=bottom - top,
+        )
+    except Exception as e:
+        logger.error(f"获取窗口矩形失败: {e}")
+        return WindowRectOutput(
+            success=False,
+            message=f"获取窗口矩形失败: {str(e)}",
+            x=None,
+            y=None,
+            width=None,
+            height=None,
+        )
 
 
 # 启动服务器入口点

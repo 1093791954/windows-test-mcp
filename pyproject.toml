@@ -9,6 +9,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "pyautogui>=0.9.54",
     "pydantic>=2.0.0",
+    "pywin32>=306",
 ]
 
 [project.optional-dependencies]
