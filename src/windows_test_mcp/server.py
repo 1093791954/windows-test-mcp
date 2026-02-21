@@ -1016,6 +1016,7 @@ class AppLaunchInput(BaseModel):
 
     app_path: str = Field(..., description="应用程序路径，如 'notepad.exe' 或完整路径 'C:\\Windows\\notepad.exe'")
     args: Optional[str] = Field(None, description="启动参数（可选）")
+    cwd: Optional[str] = Field(None, description="工作目录（可选），指定程序启动时的工作文件夹路径")
     wait_time: float = Field(0.5, description="启动后等待时间(秒)", ge=0)
 
 
@@ -1069,6 +1070,17 @@ def app_launch(input_data: AppLaunchInput) -> AppLaunchOutput:
         if input_data.args:
             cmd.extend(input_data.args.split())
 
+        # 准备启动参数
+        popen_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+        }
+
+        # 如果指定了工作目录，添加到参数
+        if input_data.cwd:
+            popen_kwargs["cwd"] = input_data.cwd
+
         # 后台启动程序（不阻塞）
         if platform.system() == "Windows":
             # Windows: 使用CREATE_NEW_CONSOLE创建新窗口，不阻塞
@@ -1076,18 +1088,14 @@ def app_launch(input_data: AppLaunchInput) -> AppLaunchOutput:
             process = subprocess.Popen(
                 cmd,
                 creationflags=creation_flags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
+                **popen_kwargs,
             )
         else:
             # 其他平台
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                **popen_kwargs,
             )
 
         # 等待指定时间让程序初始化
