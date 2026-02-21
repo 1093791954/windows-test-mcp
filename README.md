@@ -8,6 +8,17 @@
 - `screenshot_capture` - 截取整个屏幕
 - `screenshot_region` - 截取指定区域
 
+### 窗口管理工具
+- `window_activate` - 激活窗口到前台
+- `window_capture_background` - 后台截图（无需激活窗口）
+- `window_capture_foreground` - 前台截图（自动激活窗口）
+- `window_get_rect` - 获取窗口位置和大小
+
+### 应用程序管理工具
+- `app_launch` - 启动应用程序（支持指定工作目录）
+- `app_terminate` - 终止应用程序进程
+- `app_list_running` - 列出当前运行的应用程序
+
 ### 键盘工具
 - `keyboard_press` - 按键点击（按下+释放）
 - `keyboard_down` - 按下按键不放
@@ -130,6 +141,53 @@ mouse_click(clicks=2)
 mouse_scroll(clicks=5)
 ```
 
+### 窗口管理
+```python
+# 激活记事本窗口到前台
+window_activate(process_name="notepad", wait_time=0.5)
+
+# 后台截图（不干扰当前工作）
+window_capture_background(process_name="notepad", filename="state")
+
+# 前台截图（自动激活后截图）
+window_capture_foreground(process_name="notepad", filename="active")
+
+# 获取窗口位置和大小
+window_get_rect(process_name="notepad")
+```
+
+### 应用程序管理
+```python
+# 启动记事本
+app_launch(app_path="notepad.exe", wait_time=1.0)
+
+# 启动程序并指定工作目录
+app_launch(app_path="python.exe", args="script.py", cwd="D:\\projects")
+
+# 终止应用程序
+app_terminate(process_name="notepad")
+
+# 查看当前运行的应用
+app_list_running()
+```
+
+## 重要提示
+
+### 使用键盘/鼠标前的必要步骤
+**必须先激活目标窗口，再执行键盘或鼠标操作。** 这是最常见的错误。
+
+```python
+# 正确做法
+window_activate(process_name="notepad", wait_time=0.5)
+keyboard_type(text="Hello World")
+
+# 错误做法（可能输入到错误的地方）
+keyboard_type(text="Hello World")  # 窗口未激活！
+```
+
+### 技能文件
+项目包含 `.claude/skills/windows-mcp-usage/SKILL.md` 技能文件，提供详细的 Windows MCP 工具使用指南和最佳实践。
+
 ## 安全提示
 
 1. **FAILSAFE**: pyautogui启用了故障保护功能，将鼠标快速移动到屏幕左上角(0,0)会触发异常停止程序
@@ -143,7 +201,15 @@ windows-test-mcp/
 ├── src/
 │   └── windows_test_mcp/
 │       ├── __init__.py
-│       └── server.py
+│       ├── server.py
+│       ├── screenshot_tools.py
+│       ├── keyboard_mouse_tools.py
+│       ├── window_tools.py
+│       └── app_tools.py
+├── .claude/
+│   └── skills/
+│       └── windows-mcp-usage/
+│           └── SKILL.md
 ├── pyproject.toml
 └── README.md
 ```
